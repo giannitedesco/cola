@@ -335,6 +335,51 @@ again:
 	return 1;
 }
 
+/** Write to a file descriptor handling all errors.
+ * \ingroup g_fdctl
+ * @param fd file descriptor
+ * @param buf data to write
+ * @param len length of data
+ *
+ * Call write(2) with given parameters but handle all possible
+ * errors. We handle short writes, interrupted calls, fd going
+ * O_NONBLOCK under us, and only bail on really unrecoverable
+ * errors.
+ *
+ * Failure Modes:
+ *  -# undefined: any failure mode of fd_wait_single()
+ *  -# undefined: any kernel failure mode
+ * @return 0 on unrecoverable error, 1 on success.
+ */
+int fd_pwrite(int fd, off_t off, const void *buf, size_t len)
+{
+	ssize_t ret;
+
+again:
+	ret = pwrite(fd, buf, likely(len < SSIZE_MAX) ? len : SSIZE_MAX, off);
+	if ( ret < 0 ) {
+		if ( errno == EINTR )
+			goto again;
+		if ( errno == EAGAIN &&
+			fd_wait_single(fd, POLLOUT) )
+			goto again;
+		return 0;
+	}
+
+	/* This can happen on a regular file if a long I/O is interrupted
+	 * for example on NFS in soft/interruptable mode in the Linux kernel.
+	 * It can also happen on sockets and character devices.
+	 */
+	if ( (size_t)ret < len ) {
+		off += (size_t)ret;
+		buf += (size_t)ret;
+		len -= (size_t)ret;
+		goto again;
+	}
+
+	return 1;
+}
+
 int os_sigpipe_ignore(void)
 {
 	if ( signal(SIGPIPE, SIG_IGN) ) {
