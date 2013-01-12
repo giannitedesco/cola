@@ -43,8 +43,66 @@ static int do_create(int argc, char **argv)
 	}
 
 	c = cola_creat(fn, force);
+	if ( NULL == c ) {
+		cola_close(c);
+		return EXIT_FAILURE;
+	}
+
+	cola_close(c);
+	return EXIT_SUCCESS;
+}
+
+static int do_insert(int argc, char **argv)
+{
+	const char *fn;
+	cola_key_t key;
+	cola_t c;
+
+	if ( argc < 3 )
+		return usage(EXIT_FAILURE);
+
+	fn = argv[1];
+	if ( !cola_parse_key(argv[2], &key) )
+		return usage(EXIT_FAILURE);
+
+	c = cola_open(fn, 1);
 	if ( NULL == c )
 		return EXIT_FAILURE;
+
+	if ( !cola_insert(c, key) ) {
+		cola_close(c);
+		return EXIT_FAILURE;
+	}
+
+	cola_close(c);
+	return EXIT_SUCCESS;
+}
+
+static int do_query(int argc, char **argv)
+{
+	const char *fn;
+	cola_key_t key;
+	int result;
+	cola_t c;
+
+	if ( argc < 3 )
+		return usage(EXIT_FAILURE);
+
+	fn = argv[1];
+	if ( !cola_parse_key(argv[2], &key) )
+		return usage(EXIT_FAILURE);
+
+	c = cola_open(fn, 0);
+	if ( NULL == c )
+		return EXIT_FAILURE;
+
+	if ( !cola_query(c, key, &result) ) {
+		cola_close(c);
+		return EXIT_FAILURE;
+	}
+
+	printf("key %"PRId64" %sfound\n",
+		key, (result) ? "" : "not ");
 
 	cola_close(c);
 	return EXIT_SUCCESS;
@@ -58,6 +116,8 @@ int main(int argc, char **argv)
 		int (*fn)(int argc, char **argv);
 	}fn[] = {
 		{"create", do_create},
+		{"query", do_query},
+		{"insert", do_insert},
 	};
 
 	if ( argc > 0 )

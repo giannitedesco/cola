@@ -9,4 +9,15 @@
 typedef uint64_t cola_key_t;
 //typedef uint64_t cola_val_t;
 
+static inline int cola_parse_key(const char *str, cola_key_t *val)
+{
+	char *end;
+
+	*val = strtoull(str, &end, 0);
+	if ( end == str || *end != '\0' )
+		return 0;
+
+	return 1;
+}
+
 #endif /* _COLA_COMMON_H */
