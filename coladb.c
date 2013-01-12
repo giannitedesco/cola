@@ -96,7 +96,7 @@ cola_t cola_creat(const char *fn, int overwrite)
 	return do_open(fn, 1, 1, overwrite);
 }
 
-static struct cola_elem *get_level(struct _cola *c, unsigned int lvlno)
+static struct cola_elem *read_level(struct _cola *c, unsigned int lvlno)
 {
 	struct cola_elem *level = NULL;
 	cola_key_t nr_ent, ofs;
@@ -148,6 +148,32 @@ static int write_level(struct _cola *c, unsigned int lvlno,
 	return fd_pwrite(c->c_fd, ofs, level, sz);
 }
 
+static struct cola_elem *level_merge(struct cola_elem *a,
+					struct cola_elem *b,
+					unsigned int lvlno)
+{
+	cola_key_t mcnt = (1 << (lvlno + 1));
+	struct cola_elem *m;
+	cola_key_t i, aa, bb;
+
+	m = malloc(sizeof(*m) * mcnt);
+	if ( NULL == m )
+		return NULL;
+
+	for(i = aa = bb = 0; i < mcnt; i++) {
+		if ( a[aa].key < b[bb].key ) {
+			m[i] = a[aa];
+		}else if ( a[aa].key > b[bb].key ) {
+			m[i] = b[bb];
+		}else{
+			printf(" - dupe key %"PRIu64"\n", b[bb].key);
+			m[i] = b[bb];
+		}
+	}
+
+	return m;
+}
+
 int cola_insert(cola_t c, cola_key_t key)
 {
 	cola_key_t newcnt = c->c_nelem + 1;
@@ -162,8 +188,19 @@ int cola_insert(cola_t c, cola_key_t key)
 
 	for(i = 0; newcnt >= (1U << i); i++) {
 		if ( c->c_nelem & (1U << i) ) {
+			struct cola_elem *level2, *merged;
 			printf(" - level %u full\n", i);
-			/* TODO: merge down */
+			level2 = read_level(c, i);
+			if ( NULL == level2 ) {
+				free(level);
+				return 0;
+			}
+			merged = level_merge(level, level2, i);
+			free(level2);
+			free(level);
+			level = merged;
+			if ( NULL == merged )
+				return 0;
 		}else{
 			printf(" - level %u empty\n", i);
 			if ( !write_level(c, i, level) ) {
@@ -184,7 +221,7 @@ static int query_level(struct _cola *c, cola_key_t key,
 	struct cola_elem *level;
 	unsigned int i;
 
-	level = get_level(c, lvlno);
+	level = read_level(c, lvlno);
 	if ( NULL == level )
 		return 0;
 
