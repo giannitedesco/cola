@@ -4,6 +4,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <assert.h>
 
 #include <cola.h>
 #include <cola-format.h>
@@ -54,8 +55,7 @@ static struct _cola *do_open(const char *fn, int rw, int create, int overwrite)
 		}
 	}else{
 		sz = sizeof(hdr);
-		if ( !fd_read(c->c_fd, &hdr, &sz, &eof) ||
-				eof || sz != sizeof(hdr) ) {
+		if ( !fd_read(c->c_fd, &hdr, &sz, &eof) || sz != sizeof(hdr) ) {
 			fprintf(stderr, "%s: read: %s: %s\n",
 				cmd, fn, os_err2("File truncated"));
 			goto out_close;
@@ -106,9 +106,6 @@ static struct cola_elem *read_level(struct _cola *c, unsigned int lvlno)
 	nr_ent = (1 << lvlno);
 	ofs = nr_ent - 1;
 
-	printf(" - get level %u (%"PRIu64" keys @ %"PRIu64")\n",
-		lvlno , nr_ent, ofs);
-
 	sz = nr_ent * sizeof(*level);
 	level = malloc(sz);
 	if ( NULL == level )
@@ -118,7 +115,7 @@ static struct cola_elem *read_level(struct _cola *c, unsigned int lvlno)
 	ofs += sizeof(struct cola_hdr);
 
 	if ( !fd_pread(c->c_fd, ofs, level, &sz, &eof) ||
-			eof || sz != (nr_ent * sizeof(*level)) ) {
+			sz != (nr_ent * sizeof(*level)) ) {
 		fprintf(stderr, "%s: read: %s\n",
 			cmd, os_err2("File truncated"));
 		goto out_free;
@@ -153,6 +150,7 @@ static struct cola_elem *level_merge(struct cola_elem *a,
 					unsigned int lvlno)
 {
 	cola_key_t mcnt = (1 << (lvlno + 1));
+	cola_key_t max = (1 << lvlno);
 	struct cola_elem *m;
 	cola_key_t i, aa, bb;
 
@@ -161,15 +159,26 @@ static struct cola_elem *level_merge(struct cola_elem *a,
 		return NULL;
 
 	for(i = aa = bb = 0; i < mcnt; i++) {
-		if ( a[aa].key < b[bb].key ) {
+		if ( aa < max && a[aa].key < b[bb].key ) {
 			m[i] = a[aa];
-		}else if ( a[aa].key > b[bb].key ) {
+			aa++;
+		}else if ( bb < max && a[aa].key > b[bb].key ) {
 			m[i] = b[bb];
+			bb++;
 		}else{
 			printf(" - dupe key %"PRIu64"\n", b[bb].key);
-			m[i] = b[bb];
+			if ( aa < bb ) {
+				m[i] = a[aa];
+				aa++;
+			}else{
+				m[i] = b[bb];
+				bb++;
+			}
 		}
 	}
+
+	assert(aa == (1U << lvlno));
+	assert(bb == (1U << lvlno));
 
 	return m;
 }
@@ -252,6 +261,32 @@ int cola_query(cola_t c, cola_key_t key, int *result)
 	}
 
 	*result = 0;
+	return 1;
+}
+
+int cola_dump(cola_t c)
+{
+	unsigned int i;
+
+	for(i = 0; c->c_nelem >= (1U << i); i++) {
+		struct cola_elem *level;
+		unsigned int j;
+
+		if ( !(c->c_nelem & (1U << i)) )
+			continue;
+
+		level = read_level(c, i);
+		if ( NULL == level )
+			return 0;
+
+		printf("level %u:", i);
+		for(j = 0; j < (1U << i); j++) {
+			printf(" %"PRIu64, level[j].key);
+		}
+		printf("\n");
+		free(level);
+	}
+
 	return 1;
 }
 

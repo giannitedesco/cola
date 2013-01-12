@@ -14,6 +14,7 @@ static int usage(int code)
 	fprintf(f, "\t$ %s create [-f] <fn>\n", cmd);
 	fprintf(f, "\t$ %s query <fn> <key>\n", cmd);
 	fprintf(f, "\t$ %s insert <fn> <key>\n", cmd);
+	fprintf(f, "\t$ %s dump <fn>\n", cmd);
 	fprintf(f, "\t$ %s help\n", cmd);
 	fprintf(f, "\n");
 
@@ -108,6 +109,28 @@ static int do_query(int argc, char **argv)
 	return EXIT_SUCCESS;
 }
 
+static int do_dump(int argc, char **argv)
+{
+	const char *fn;
+	cola_t c;
+
+	if ( argc < 2 )
+		return usage(EXIT_FAILURE);
+
+	fn = argv[1];
+	c = cola_open(fn, 0);
+	if ( NULL == c )
+		return EXIT_FAILURE;
+
+	if ( !cola_dump(c) ) {
+		cola_close(c);
+		return EXIT_FAILURE;
+	}
+
+	cola_close(c);
+	return EXIT_SUCCESS;
+}
+
 int main(int argc, char **argv)
 {
 	unsigned int i;
@@ -118,6 +141,7 @@ int main(int argc, char **argv)
 		{"create", do_create},
 		{"query", do_query},
 		{"insert", do_insert},
+		{"dump", do_dump},
 	};
 
 	if ( argc > 0 )
