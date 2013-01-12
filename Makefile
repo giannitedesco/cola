@@ -21,7 +21,9 @@ CFLAGS := -g -pipe -O2 -Wall \
 
 MKNFA_BIN := cola
 MKNFA_LIBS := 
-MKNFA_OBJ = cola.o
+MKNFA_OBJ = cola.o \
+		os.o \
+		coladb.o
 
 ALL_BIN := $(MKNFA_BIN)
 ALL_OBJ := $(MKNFA_OBJ)
