@@ -21,6 +21,38 @@ static int usage(int code)
 	return code;
 }
 
+static int do_insertrandom(int argc, char **argv)
+{
+	const char *fn;
+	cola_key_t seed, count, i;
+	cola_t c;
+
+	if ( argc < 4 )
+		return usage(EXIT_FAILURE);
+
+	fn = argv[1];
+	if ( !cola_parse_key(argv[2], &seed) )
+		return usage(EXIT_FAILURE);
+	if ( !cola_parse_key(argv[3], &count) )
+		return usage(EXIT_FAILURE);
+
+	c = cola_open(fn, 1);
+	if ( NULL == c )
+		return EXIT_FAILURE;
+
+	srand(seed);
+	for(i = 0; i < count; i++) {
+		//if ( !cola_insert(c, rand()) ) {
+		if ( !cola_insert(c, i) ) {
+			cola_close(c);
+			return EXIT_FAILURE;
+		}
+	}
+
+	cola_close(c);
+	return EXIT_SUCCESS;
+}
+
 static int do_create(int argc, char **argv)
 {
 	struct _cola *c;
@@ -141,6 +173,7 @@ int main(int argc, char **argv)
 		{"create", do_create},
 		{"query", do_query},
 		{"insert", do_insert},
+		{"insertrandom", do_insertrandom},
 		{"dump", do_dump},
 	};
 

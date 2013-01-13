@@ -214,14 +214,14 @@ int cola_insert(cola_t c, cola_key_t key)
 			printf(" - level %u empty\n", i);
 			if ( !write_level(c, i, level) ) {
 				free(level);
-				return 1;
+				return 0;
 			}
 			break;
 		}
 	}
 
 	c->c_nelem = newcnt;
-	return 0;
+	return 1;
 }
 
 static int query_level(struct _cola *c, cola_key_t key,
@@ -272,17 +272,18 @@ int cola_dump(cola_t c)
 		struct cola_elem *level;
 		unsigned int j;
 
-		if ( !(c->c_nelem & (1U << i)) )
-			continue;
-
 		level = read_level(c, i);
 		if ( NULL == level )
 			return 0;
 
+		if ( !(c->c_nelem & (1U << i)) )
+			printf("\033[2;37m");
 		printf("level %u:", i);
 		for(j = 0; j < (1U << i); j++) {
 			printf(" %"PRIu64, level[j].key);
 		}
+		if ( !(c->c_nelem & (1U << i)) )
+			printf("\033[0m");
 		printf("\n");
 		free(level);
 	}
