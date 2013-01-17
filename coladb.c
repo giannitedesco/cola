@@ -35,6 +35,12 @@ struct _cola {
 	unsigned int c_maplvls;
 };
 
+struct buf {
+	struct cola_elem *ptr;
+	cola_key_t nelem;
+	int heap;
+};
+
 static int remap(struct _cola *c, unsigned int lvlno)
 {
 	size_t sz;
@@ -42,7 +48,7 @@ static int remap(struct _cola *c, unsigned int lvlno)
 
 	dprintf(" - remap %u\n", lvlno);
 
-	sz = (1U << (lvlno + 1)) - 1;
+	sz = (1U << (lvlno + 2)) - 1;
 	sz *= sizeof(struct cola_elem);
 	sz += sizeof(struct cola_hdr);
 
@@ -167,10 +173,27 @@ cola_t cola_creat(const char *fn, int overwrite)
 	return do_open(fn, 1, 1, overwrite);
 }
 
-static struct cola_elem *read_level_part(struct _cola *c, unsigned int lvlno,
-					cola_key_t from, cola_key_t to)
+static void buf_finish(struct buf *buf)
 {
-	struct cola_elem *level = NULL;
+	if ( buf->heap )
+		free(buf->ptr);
+	buf->ptr = NULL;
+	buf->nelem = 0;
+}
+
+static int buf_alloc(struct _cola *c, unsigned int nelem, struct buf *buf)
+{
+	buf->ptr = malloc(nelem * sizeof(*buf->ptr));
+	if ( NULL == buf->ptr )
+		return 0;
+	buf->nelem = nelem;
+	return 1;
+}
+
+static int read_level_part(struct _cola *c, unsigned int lvlno,
+					cola_key_t from, cola_key_t to,
+					struct buf *buf)
+{
 	cola_key_t nr_ent, ofs;
 	size_t sz;
 	int eof;
@@ -181,75 +204,105 @@ static struct cola_elem *read_level_part(struct _cola *c, unsigned int lvlno,
 	nr_ent = to - from;
 	ofs = (1U << lvlno) - 1;
 	ofs += from;
-	ofs *= sizeof(*level);
+	ofs *= sizeof(*buf->ptr);
 	ofs += sizeof(struct cola_hdr);
-	sz = nr_ent * sizeof(*level);
+	sz = nr_ent * sizeof(*buf->ptr);
 
 	if ( lvlno > c->c_maplvls ) {
-		level = malloc(sz);
-		if ( NULL == level )
-			goto out;
+		buf->ptr = malloc(nr_ent * sizeof(*buf->ptr));
+		if ( NULL == buf->ptr )
+			return 0;
 
-		if ( !fd_pread(c->c_fd, ofs, level, &sz, &eof) ||
-				sz != (nr_ent * sizeof(*level)) ) {
+		buf->nelem = nr_ent;
+		buf->heap = 1;
+
+		if ( !fd_pread(c->c_fd, ofs, buf->ptr, &sz, &eof) ||
+				sz != (nr_ent * sizeof(*buf->ptr)) ) {
 			fprintf(stderr, "%s: read: %s\n",
 				cmd, os_err2("File truncated"));
-			goto out_free;
+			buf_finish(buf);
+			return 0;
 		}
 	}else{
-		level = (struct cola_elem *)(c->c_map + ofs);
+		buf->ptr = (struct cola_elem *)(c->c_map + ofs);
+		buf->nelem = (1U << lvlno);
+		buf->heap = 0;
 	}
 
-	goto out; /* success */
-
-out_free:
-	free(level);
-	level = NULL;
-out:
-	return level;
+	return 1;
 }
 
-static struct cola_elem *read_level(struct _cola *c, unsigned int lvlno)
+static int read_level(struct _cola *c, unsigned int lvlno,
+				struct buf *buf)
 {
-	return read_level_part(c, lvlno, 0, 1U << lvlno);
+	return read_level_part(c, lvlno, 0, 1U << lvlno, buf);
 }
 
-static int write_level(struct _cola *c, unsigned int lvlno,
-			struct cola_elem *level)
+static int write_prep(struct _cola *c, unsigned int lvlno, struct buf *buf)
 {
 	cola_key_t nr_ent, ofs;
 	size_t sz;
-	int ret;
 
 	nr_ent = (1 << lvlno);
-	sz = nr_ent * sizeof(*level);
-	ofs = nr_ent - 1;
-	ofs *= sizeof(*level);
-	ofs += sizeof(struct cola_hdr);
 
+	ofs = nr_ent - 1;
+	ofs *= sizeof(*buf->ptr);
+	ofs += sizeof(struct cola_hdr);
+	sz = nr_ent * sizeof(*buf->ptr);
+
+	/* make sure the level we're about to write to is allocated and,
+	 * if required, mapped
+	*/
 	if ( (1U << lvlno) > c->c_nelem ) {
 		if ( lvlno > c->c_maplvls ) {
 			dprintf("fallocate level %u\n", lvlno);
 			if ( posix_fallocate(c->c_fd, ofs, ofs + sz) )
 				fprintf(stderr, "%s: fallocate: %s\n",
 					cmd, os_err());
+			if ( lvlno <= MAP_LEVELS &&
+					(1U << lvlno) > c->c_nelem ) {
+				if ( !remap(c, lvlno) )
+					return 0;
+			}
 		}
 	}
 
 	if ( lvlno > c->c_maplvls ) {
-		ret = fd_pwrite(c->c_fd, ofs, level, sz);
+		buf->ptr = malloc(nr_ent);
+		if ( NULL == buf->ptr ) {
+			fprintf(stderr, "%s: malloc: %s\n", cmd, os_err());
+			return 0;
+		}
+		buf->heap = 1;
 	}else{
-		struct cola_elem *out;
-		out = (struct cola_elem *)(c->c_map + ofs);
-		memcpy(out, level, sz);
+		buf->ptr = (struct cola_elem *)(c->c_map + ofs);
+		buf->heap = 0;
+	}
+
+	buf->nelem = nr_ent;
+	return 1;
+}
+
+static int write_level(struct _cola *c, unsigned int lvlno,
+			struct buf *buf)
+{
+	cola_key_t ofs, nr_ent;
+	int ret;
+
+	nr_ent = (1 << lvlno);
+	ofs = nr_ent - 1;
+	ofs *= sizeof(*buf->ptr);
+	ofs += sizeof(struct cola_hdr);
+
+	assert(nr_ent <= buf->nelem);
+
+	if ( lvlno > c->c_maplvls ) {
+		ret = fd_pwrite(c->c_fd, ofs, buf->ptr,
+				buf->nelem * sizeof(*buf->ptr));
+	}else{
 		ret = 1;
 	}
 
-	if ( lvlno > INITIAL_LEVELS &&
-			lvlno < MAP_LEVELS &&
-			(1U << lvlno) > c->c_nelem ) {
-		ret = remap(c, lvlno);
-	}
 	return ret;
 }
 
@@ -313,7 +366,7 @@ static int fractional_cascade(struct _cola *c, unsigned int lvlno,
 				struct cola_elem *cur)
 {
 	unsigned int nl = lvlno + 1;
-	struct cola_elem *next;
+	struct buf next;
 	cola_key_t i, j;
 
 	if ( (c->c_nelem < (1U << nl)) )
@@ -323,18 +376,17 @@ static int fractional_cascade(struct _cola *c, unsigned int lvlno,
 	 * if that level went from 1 to 0.
 	*/
 	dprintf(" - fractional cascade %u -> %u\n", lvlno, nl);
-	next = read_level(c, nl);
-	if ( NULL == next )
+	if ( !read_level(c, nl, &next) )
 		return 0;
 
 	for(i = j = 0; i < (1U << lvlno); i++) {
-		while(j < (1U << nl) && next[j].key < cur[i].key) {
+		while(j < (1U << nl) && next.ptr[j].key < cur[i].key) {
 			j++;
 		}
 		cur[i].fp = j;
 	}
-	if ( nl > c->c_maplvls )
-		free(next);
+
+	buf_finish(&next);
 
 	return 1;
 }
@@ -342,43 +394,46 @@ static int fractional_cascade(struct _cola *c, unsigned int lvlno,
 int cola_insert(cola_t c, cola_key_t key)
 {
 	cola_key_t newcnt = c->c_nelem + 1;
-	struct cola_elem *level;
+	struct buf level;
 	unsigned int i;
 
-	level = calloc(1, sizeof(*level));
-	if ( NULL == level )
+	if ( !buf_alloc(c, 1, &level) )
 		return 0;
 
 	dprintf("Insert key %"PRIu64"\n", key);
-	level->key = key;
+	level.ptr[0].key = key;
 
 	for(i = 0; newcnt >= (1U << i); i++) {
 		if ( c->c_nelem & (1U << i) ) {
-			struct cola_elem *level2, *merged;
+			struct cola_elem *merged;
+			struct buf level2;
+
 			dprintf(" - level %u full\n", i);
-			level2 = read_level(c, i);
-			if ( NULL == level2 ) {
-				free(level);
+			if ( !read_level(c, i, &level2) ) {
+				buf_finish(&level);
 				return 0;
 			}
-			merged = level_merge(level2, level, i);
-			if ( !write_level(c, i, level2) ) {
+			merged = level_merge(level2.ptr, level.ptr, i);
+			if ( !write_level(c, i, &level2) ) {
 				/* FIXME */
 			}
-			if ( i > c->c_maplvls )
-				free(level2);
-			free(level);
-			level = merged;
+			buf_finish(&level2);
+			buf_finish(&level);
+
+			/* TODO: write prep this shit */
+			level.ptr = merged;
+			level.nelem = (1U << (i + 1));
+			level.heap = 1;
 			if ( NULL == merged )
 				return 0;
 		}else{
 			dprintf(" - level %u empty\n", i);
-			if ( !fractional_cascade(c, i, level) ||
-					!write_level(c, i, level) ) {
-				free(level);
+			if ( !fractional_cascade(c, i, level.ptr) ||
+					!write_level(c, i, &level) ) {
+				buf_finish(&level);
 				return 0;
 			}
-			free(level);
+			buf_finish(&level);
 			break;
 		}
 	}
@@ -396,19 +451,19 @@ static int query_level(struct _cola *c, cola_key_t key,
 			unsigned int lvlno, int *result,
 			cola_key_t *lo, cola_key_t *hi)
 {
-	struct cola_elem *level, *p;
+	struct buf level;
+	struct cola_elem *p;
 	cola_key_t n, l, h, sz;
 
 	dprintf("bsearch level %u (%"PRIu64":%"PRIu64")\n", lvlno, *lo, *hi);
-	level = read_level_part(c, lvlno, *lo, *hi);
-	if ( NULL == level )
+	if ( !read_level_part(c, lvlno, *lo, *hi, &level) )
 		return 0;
 
 	sz = *hi - *lo;
 	l = 0;
 	h = (1U << (lvlno + 1));
 
-	for(*result = 0, p = level, n = sz; n; ) {
+	for(*result = 0, p = level.ptr, n = sz; n; ) {
 		cola_key_t i = n / 2;
 		if ( key < p[i].key ) {
 			if ( p[i].fp < h )
@@ -426,13 +481,13 @@ static int query_level(struct _cola *c, cola_key_t key,
 	}
 
 	if ( *result == 0 ) {
-		dprintf(" - nope %"PRIu64" @ %"PRIu64"\n", n, p - level);
+		dprintf(" - nope %"PRIu64" @ %"PRIu64"\n", n, p - level.ptr);
 		dprintf(" - lo=%"PRIu64" hi=%"PRIu64"\n", l, h);
 	}
 
 	*lo = l;
 	*hi = h;
-	free(level);
+	buf_finish(&level);
 	return 1;
 }
 
@@ -457,24 +512,23 @@ int cola_dump(cola_t c)
 	unsigned int i;
 
 	for(i = 0; c->c_nelem >= (1U << i); i++) {
-		struct cola_elem *level;
+		struct buf level;
 		unsigned int j;
 
-		level = read_level(c, i);
-		if ( NULL == level )
+		if ( !read_level(c, i, &level) )
 			return 0;
 
 		if ( !(c->c_nelem & (1U << i)) )
 			printf("\033[2;37m");
 		printf("level %u:", i);
 		for(j = 0; j < (1U << i); j++) {
-			printf(" %"PRIu64, level[j].key);
-			printf("[%"PRIu64"]", level[j].fp);
+			printf(" %"PRIu64, level.ptr[j].key);
+			printf("[%"PRIu64"]", level.ptr[j].fp);
 		}
 		if ( !(c->c_nelem & (1U << i)) )
 			printf("\033[0m");
 		printf("\n");
-		free(level);
+		buf_finish(&level);
 	}
 
 	return 1;
