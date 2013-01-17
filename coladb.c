@@ -153,6 +153,14 @@ static int write_level(struct _cola *c, unsigned int lvlno,
 	ofs *= sizeof(*level);
 	ofs += sizeof(struct cola_hdr);
 
+	if ( (1U << lvlno) > c->c_nelem ) {
+		printf("fallocate level %u\n", lvlno);
+		if ( posix_fallocate(c->c_fd, ofs, ofs + sz) ) {
+			fprintf(stderr, "%s: fallocate: %s\n",
+				cmd, os_err());
+		}
+	}
+
 	return fd_pwrite(c->c_fd, ofs, level, sz);
 }
 
