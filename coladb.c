@@ -441,7 +441,8 @@ int cola_insert(cola_t c, cola_key_t key)
 				return 0;
 			}
 
-			if ( c->c_nelem & (1U << (i + 1)) ) {
+			if ( (c->c_nelem & (1U << (i + 1))) ||
+					i + 1 >= c->c_maplvls ) {
 				ret = buf_alloc(c, (1U << (i + 1)), &merged);
 			}else{
 				/* landing in next level so write to map */
