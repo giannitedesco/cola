@@ -283,16 +283,21 @@ int cola_insert(cola_t c, cola_key_t key)
 static int query_level(struct _cola *c, cola_key_t key,
 			unsigned int lvlno, int *result)
 {
-	struct cola_elem *level;
-	unsigned int i;
+	struct cola_elem *level, *p;
+	cola_key_t n;
 
 	level = read_level(c, lvlno);
 	if ( NULL == level )
 		return 0;
 
-	/* FIXME: bsearch */
-	for(i = 0; i < (1U << lvlno); i++) {
-		if ( level[i].key == key ) {
+	for(*result = 0, p = level, n = (1U << lvlno); n; ) {
+		cola_key_t i = n / 2;
+		if ( key < p[i].key ) {
+			n = i;
+		}else if ( key > p[i].key ) {
+			p = p + (i + 1);
+			n = n - (i + 1);
+		}else{
 			*result = 1;
 			break;
 		}
