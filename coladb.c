@@ -34,6 +34,7 @@ struct _cola {
 	unsigned int c_maplvls;
 	unsigned int c_nxtlvl;
 	int c_fd;
+	int c_rw;
 };
 
 struct buf {
@@ -83,14 +84,16 @@ static int remap(struct _cola *c, unsigned int lvlno)
 
 static int map(struct _cola *c)
 {
+	int f;
 	size_t sz;
 	uint8_t *map;
 
+	f = (c->c_rw) ? (PROT_READ|PROT_WRITE) : (PROT_READ);
 	sz = (1U << (INITIAL_LEVELS + 1)) - 1;
 	sz *= sizeof(struct cola_elem);
 	sz += sizeof(struct cola_hdr);
 
-	map = mmap(NULL, sz, PROT_READ|PROT_WRITE, MAP_SHARED, c->c_fd, 0);
+	map = mmap(NULL, sz, f, MAP_SHARED, c->c_fd, 0);
 	if ( map == MAP_FAILED ) {
 		fprintf(stderr, "%s: mmap: %s\n", cmd, os_err());
 		return 0;
@@ -165,6 +168,7 @@ static struct _cola *do_open(const char *fn, int rw, int create, int overwrite)
 		c->c_nelem = hdr.h_nelem;
 	}
 
+	c->c_rw = rw;
 	if ( !map(c) )
 		goto out_close;
 
@@ -574,11 +578,14 @@ int cola_close(cola_t c)
 	int ret = 1;
 	if ( c ) {
 		struct cola_hdr *hdr = (struct cola_hdr *)c->c_map;
-		hdr->h_nelem = c->c_nelem;
-		hdr->h_magic = COLA_MAGIC;
-		hdr->h_vers = COLA_CURRENT_VER;
-		if ( msync(c->c_map, c->c_mapsz, MS_ASYNC) ) {
-			ret = 0;
+
+		if ( c->c_rw ) {
+			hdr->h_nelem = c->c_nelem;
+			hdr->h_magic = COLA_MAGIC;
+			hdr->h_vers = COLA_CURRENT_VER;
+			if ( msync(c->c_map, c->c_mapsz, MS_ASYNC) ) {
+				ret = 0;
+			}
 		}
 		if ( munmap(c->c_map, c->c_mapsz) ) {
 			ret = 0;
