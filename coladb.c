@@ -415,7 +415,9 @@ int cola_insert(cola_t c, cola_key_t key)
 			}
 			merged = level_merge(level2.ptr, level.ptr, i);
 			if ( !write_level(c, i, &level2) ) {
-				/* FIXME */
+				buf_finish(&level2);
+				buf_finish(&level);
+				return 0;
 			}
 			buf_finish(&level2);
 			buf_finish(&level);
