@@ -10,8 +10,8 @@
 #include <cola-format.h>
 #include <os.h>
 
-#if 0
-#define dprintf printf
+#if DEBUG
+#define dprintf(x, ...)  printf("\033[35m" x "\033[0m", ##__VA_ARGS__)
 #else
 #define dprintf(x...) do {} while(0)
 #endif
@@ -145,6 +145,7 @@ static int write_level(struct _cola *c, unsigned int lvlno,
 	return fd_pwrite(c->c_fd, ofs, level, sz);
 }
 
+/* a is always what was in the k-1'th array */
 static struct cola_elem *level_merge(struct cola_elem *a,
 					struct cola_elem *b,
 					unsigned int lvlno)
@@ -166,7 +167,6 @@ static struct cola_elem *level_merge(struct cola_elem *a,
 			m[i] = b[bb];
 			bb++;
 		}else{
-			printf(" - dupe key %"PRIu64"\n", b[bb].key);
 			if ( aa < bb ) {
 				m[i] = a[aa];
 				aa++;
@@ -180,7 +180,53 @@ static struct cola_elem *level_merge(struct cola_elem *a,
 	assert(aa == (1U << lvlno));
 	assert(bb == (1U << lvlno));
 
+#if 0
+	/* modify a with ideal keys and pointers, a will
+	 * always be 'empty' after this merge
+	 *
+	 * FIXME: changing keys ruins prior level pointers
+	*/
+	for(i = 0; i < max; i++) {
+		a[i].key = m[i << 1U].key;
+		a[i].fp = i << 1U;
+	}
+#else
+	for(i = bb = 0; i < max; i++) {
+		while(bb < mcnt && m[bb].key < a[i].key) {
+			bb++;
+		}
+		a[i].fp = bb;
+	}
+#endif
 	return m;
+}
+
+static int fractional_cascade(struct _cola *c, unsigned int lvlno,
+				struct cola_elem *cur)
+{
+	unsigned int nl = lvlno + 1;
+	struct cola_elem *next;
+	cola_key_t i, j;
+
+	if ( !(c->c_nelem & (1U << nl)) )
+		return 1;
+
+	/* TODO: investigate relying on prior level pointers
+	 * if that level went from 1 to 0.
+	*/
+	dprintf(" - fractional cascade %u -> %u\n", lvlno, nl);
+	next = read_level(c, nl);
+	if ( NULL == next )
+		return 0;
+
+	for(i = j = 0; i < (1U << lvlno); i++) {
+		while(j < (1U << nl) && next[j].key < cur[i].key) {
+			j++;
+		}
+		cur[i].fp = j;
+	}
+
+	return 1;
 }
 
 int cola_insert(cola_t c, cola_key_t key)
@@ -189,30 +235,35 @@ int cola_insert(cola_t c, cola_key_t key)
 	struct cola_elem *level;
 	unsigned int i;
 
-	level = malloc(sizeof(*level));
+	level = calloc(1, sizeof(*level));
 	if ( NULL == level )
 		return 0;
 
+	dprintf("Insert key %"PRIu64"\n", key);
 	level->key = key;
 
 	for(i = 0; newcnt >= (1U << i); i++) {
 		if ( c->c_nelem & (1U << i) ) {
 			struct cola_elem *level2, *merged;
-			printf(" - level %u full\n", i);
+			dprintf(" - level %u full\n", i);
 			level2 = read_level(c, i);
 			if ( NULL == level2 ) {
 				free(level);
 				return 0;
 			}
-			merged = level_merge(level, level2, i);
+			merged = level_merge(level2, level, i);
+			if ( !write_level(c, i, level2) ) {
+				/* FIXME */
+			}
 			free(level2);
 			free(level);
 			level = merged;
 			if ( NULL == merged )
 				return 0;
 		}else{
-			printf(" - level %u empty\n", i);
-			if ( !write_level(c, i, level) ) {
+			dprintf(" - level %u empty\n", i);
+			if ( !fractional_cascade(c, i, level) ||
+					!write_level(c, i, level) ) {
 				free(level);
 				return 0;
 			}
@@ -220,7 +271,12 @@ int cola_insert(cola_t c, cola_key_t key)
 		}
 	}
 
-	c->c_nelem = newcnt;
+	c->c_nelem++;
+	dprintf("\n");
+#if DEBUG
+	cola_dump(c);
+	dprintf("\n");
+#endif
 	return 1;
 }
 
@@ -281,6 +337,7 @@ int cola_dump(cola_t c)
 		printf("level %u:", i);
 		for(j = 0; j < (1U << i); j++) {
 			printf(" %"PRIu64, level[j].key);
+			printf("[%"PRIu64"]", level[j].fp);
 		}
 		if ( !(c->c_nelem & (1U << i)) )
 			printf("\033[0m");

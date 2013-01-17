@@ -42,8 +42,11 @@ static int do_insertrandom(int argc, char **argv)
 
 	srand(seed);
 	for(i = 0; i < count; i++) {
-		//if ( !cola_insert(c, rand()) ) {
+#if 1
+		if ( !cola_insert(c, rand() & 0xff) ) {
+#else
 		if ( !cola_insert(c, i) ) {
+#endif
 			cola_close(c);
 			return EXIT_FAILURE;
 		}
