@@ -10,6 +10,8 @@
 #include <cola-format.h>
 #include <os.h>
 
+#define INITIAL_LEVELS		17 /* 128K */
+
 #define DEBUG 0
 #if DEBUG
 #define dprintf(x, ...)  printf("\033[35m" x "\033[0m", ##__VA_ARGS__)
@@ -46,6 +48,8 @@ static struct _cola *do_open(const char *fn, int rw, int create, int overwrite)
 	}
 
 	if ( create ) {
+		off_t initial;
+
 		hdr.h_nelem = 0;
 		hdr.h_magic = COLA_MAGIC;
 		hdr.h_vers = COLA_CURRENT_VER;
@@ -53,6 +57,14 @@ static struct _cola *do_open(const char *fn, int rw, int create, int overwrite)
 			fprintf(stderr, "%s: write: %s: %s\n",
 				cmd, fn, os_err());
 			goto out_close;
+		}
+
+		initial = (1U << (INITIAL_LEVELS)) - 1;
+		initial *= sizeof(struct cola_elem);
+		initial += sizeof(hdr);
+		if ( posix_fallocate(c->c_fd, 0, initial) ) {
+			fprintf(stderr, "%s: %s: fallocate: %s\n",
+				cmd, fn, os_err());
 		}
 	}else{
 		sz = sizeof(hdr);
@@ -154,10 +166,11 @@ static int write_level(struct _cola *c, unsigned int lvlno,
 	ofs += sizeof(struct cola_hdr);
 
 	if ( (1U << lvlno) > c->c_nelem ) {
-		printf("fallocate level %u\n", lvlno);
-		if ( posix_fallocate(c->c_fd, ofs, ofs + sz) ) {
-			fprintf(stderr, "%s: fallocate: %s\n",
-				cmd, os_err());
+		if ( lvlno > INITIAL_LEVELS ) {
+			printf("fallocate level %u\n", lvlno);
+			if ( posix_fallocate(c->c_fd, ofs, ofs + sz) )
+				fprintf(stderr, "%s: fallocate: %s\n",
+					cmd, os_err());
 		}
 	}
 
