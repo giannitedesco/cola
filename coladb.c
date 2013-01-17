@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -5,12 +6,14 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <assert.h>
+#include <sys/mman.h>
 
 #include <cola.h>
 #include <cola-format.h>
 #include <os.h>
 
 #define INITIAL_LEVELS		17 /* 128K */
+#define MAP_LEVELS		23 /* 8M */
 
 #define DEBUG 0
 #if DEBUG
@@ -22,7 +25,56 @@
 struct _cola {
 	int c_fd;
 	cola_key_t c_nelem;
+	uint8_t *c_map;
+	size_t c_mapsz;
+	unsigned int c_maplvls;
 };
+
+static int remap(struct _cola *c, unsigned int lvlno)
+{
+	size_t sz;
+	uint8_t *map;
+
+	printf("remap %u\n", lvlno);
+
+	sz = (1U << (lvlno + 1)) - 1;
+	sz *= sizeof(struct cola_elem);
+	sz += sizeof(struct cola_hdr);
+
+	map = mremap(c->c_map, c->c_mapsz, sz, MREMAP_MAYMOVE);
+	if ( map == MAP_FAILED ) {
+		fprintf(stderr, "%s: mmap: %s\n", cmd, os_err());
+		return 0;
+	}
+
+	c->c_maplvls = lvlno;
+	c->c_mapsz = sz;
+	c->c_map = map;
+	return 1;
+}
+
+static int map(struct _cola *c)
+{
+	size_t sz;
+	uint8_t *map;
+
+	printf("map %u\n", INITIAL_LEVELS);
+
+	sz = (1U << (INITIAL_LEVELS + 1)) - 1;
+	sz *= sizeof(struct cola_elem);
+	sz += sizeof(struct cola_hdr);
+
+	map = mmap(NULL, sz, PROT_READ|PROT_WRITE, MAP_SHARED, c->c_fd, 0);
+	if ( map == MAP_FAILED ) {
+		fprintf(stderr, "%s: mmap: %s\n", cmd, os_err());
+		return 0;
+	}
+
+	c->c_maplvls = INITIAL_LEVELS;
+	c->c_mapsz = sz;
+	c->c_map = map;
+	return 1;
+}
 
 static struct _cola *do_open(const char *fn, int rw, int create, int overwrite)
 {
@@ -59,7 +111,7 @@ static struct _cola *do_open(const char *fn, int rw, int create, int overwrite)
 			goto out_close;
 		}
 
-		initial = (1U << (INITIAL_LEVELS)) - 1;
+		initial = (1U << (INITIAL_LEVELS + 1)) - 1;
 		initial *= sizeof(struct cola_elem);
 		initial += sizeof(hdr);
 		if ( posix_fallocate(c->c_fd, 0, initial) ) {
@@ -86,6 +138,9 @@ static struct _cola *do_open(const char *fn, int rw, int create, int overwrite)
 
 		c->c_nelem = hdr.h_nelem;
 	}
+
+	if ( !map(c) )
+		goto out_close;
 
 	/* success */
 	goto out;
@@ -123,20 +178,23 @@ static struct cola_elem *read_level_part(struct _cola *c, unsigned int lvlno,
 	nr_ent = to - from;
 	ofs = (1U << lvlno) - 1;
 	ofs += from;
-
-	sz = nr_ent * sizeof(*level);
-	level = malloc(sz);
-	if ( NULL == level )
-		goto out;
-
 	ofs *= sizeof(*level);
 	ofs += sizeof(struct cola_hdr);
+	sz = nr_ent * sizeof(*level);
 
-	if ( !fd_pread(c->c_fd, ofs, level, &sz, &eof) ||
-			sz != (nr_ent * sizeof(*level)) ) {
-		fprintf(stderr, "%s: read: %s\n",
-			cmd, os_err2("File truncated"));
-		goto out_free;
+	if ( lvlno > c->c_maplvls ) {
+		level = malloc(sz);
+		if ( NULL == level )
+			goto out;
+
+		if ( !fd_pread(c->c_fd, ofs, level, &sz, &eof) ||
+				sz != (nr_ent * sizeof(*level)) ) {
+			fprintf(stderr, "%s: read: %s\n",
+				cmd, os_err2("File truncated"));
+			goto out_free;
+		}
+	}else{
+		level = (struct cola_elem *)(c->c_map + ofs);
 	}
 
 	goto out; /* success */
@@ -158,6 +216,7 @@ static int write_level(struct _cola *c, unsigned int lvlno,
 {
 	cola_key_t nr_ent, ofs;
 	size_t sz;
+	int ret;
 
 	nr_ent = (1 << lvlno);
 	sz = nr_ent * sizeof(*level);
@@ -166,7 +225,7 @@ static int write_level(struct _cola *c, unsigned int lvlno,
 	ofs += sizeof(struct cola_hdr);
 
 	if ( (1U << lvlno) > c->c_nelem ) {
-		if ( lvlno > INITIAL_LEVELS ) {
+		if ( lvlno > c->c_maplvls ) {
 			printf("fallocate level %u\n", lvlno);
 			if ( posix_fallocate(c->c_fd, ofs, ofs + sz) )
 				fprintf(stderr, "%s: fallocate: %s\n",
@@ -174,7 +233,22 @@ static int write_level(struct _cola *c, unsigned int lvlno,
 		}
 	}
 
-	return fd_pwrite(c->c_fd, ofs, level, sz);
+	if ( lvlno > c->c_maplvls ) {
+		ret = fd_pwrite(c->c_fd, ofs, level, sz);
+	}else{
+		struct cola_elem *out;
+		out = (struct cola_elem *)(c->c_map + ofs);
+		memcpy(out, level, sz);
+		ret = 1;
+	}
+
+	/* TODO: remap then write async */
+	if ( lvlno > INITIAL_LEVELS &&
+			lvlno < MAP_LEVELS &&
+			(1U << lvlno) > c->c_nelem ) {
+		ret = remap(c, lvlno);
+	}
+	return ret;
 }
 
 /* a is always what was in the k-1'th array */
@@ -257,7 +331,8 @@ static int fractional_cascade(struct _cola *c, unsigned int lvlno,
 		}
 		cur[i].fp = j;
 	}
-	free(next);
+	if ( nl > c->c_maplvls )
+		free(next);
 
 	return 1;
 }
@@ -288,7 +363,8 @@ int cola_insert(cola_t c, cola_key_t key)
 			if ( !write_level(c, i, level2) ) {
 				/* FIXME */
 			}
-			free(level2);
+			if ( i > c->c_maplvls )
+				free(level2);
 			free(level);
 			level = merged;
 			if ( NULL == merged )
@@ -404,16 +480,22 @@ int cola_dump(cola_t c)
 
 int cola_close(cola_t c)
 {
+	int ret = 1;
 	if ( c ) {
-		struct cola_hdr hdr;
-		hdr.h_nelem = c->c_nelem;
-		hdr.h_magic = COLA_MAGIC;
-		hdr.h_vers = COLA_CURRENT_VER;
-		if ( !fd_pwrite(c->c_fd, 0, &hdr, sizeof(hdr)) )
-			return 0;
-		if ( !fd_close(c->c_fd) )
-			return 0;
+		struct cola_hdr *hdr = (struct cola_hdr *)c->c_map;
+		hdr->h_nelem = c->c_nelem;
+		hdr->h_magic = COLA_MAGIC;
+		hdr->h_vers = COLA_CURRENT_VER;
+		if ( msync(c->c_map, c->c_mapsz, MS_ASYNC) ) {
+			ret = 0;
+		}
+		if ( munmap(c->c_map, c->c_mapsz) ) {
+			ret = 0;
+		}
+		if ( !fd_close(c->c_fd) ) {
+			ret = 0;
+		}
 		free(c);
 	}
-	return 1;
+	return ret;
 }
