@@ -1,3 +1,8 @@
+/*
+* This file is part of cola
+* Copyright (c) 2013 Gianni Tedesco
+* This program is released under the terms of the GNU GPL version 2
+*/
 #ifndef _COLA_FORMAT_H
 #define _COLA_FORMAT_H
 

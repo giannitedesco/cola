@@ -1,3 +1,8 @@
+/*
+* This file is part of cola
+* Copyright (c) 2013 Gianni Tedesco
+* This program is released under the terms of the GNU GPL version 2
+*/
 #define _GNU_SOURCE
 #include <stdlib.h>
 #include <stdio.h>

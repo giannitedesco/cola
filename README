@@ -1,0 +1,19 @@
+cola - Cache Oblivious Lookahead Array
+Copyright (c) 2013 Gianni Tedesco
+
+0. INTRODUCTION
+This implements the COLA structure described in the paper
+"Cache Oblivious Streaming B-Trees" by Bender, Farach-Colton, et al.
+
+The code implements fractional cascading, keeps growth factor to 2,
+and the only other optimisation is a bit of mmap.
+
+Values are not stored yet.
+
+Deamortisation (via background write thread) is also not implemented.
+
+1. BUILDING
+ $ make
+
+2. RUNNING
+ $ ./cola help
