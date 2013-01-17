@@ -208,7 +208,7 @@ static int fractional_cascade(struct _cola *c, unsigned int lvlno,
 	struct cola_elem *next;
 	cola_key_t i, j;
 
-	if ( !(c->c_nelem & (1U << nl)) )
+	if ( (c->c_nelem < (1U << nl)) )
 		return 1;
 
 	/* TODO: investigate relying on prior level pointers
