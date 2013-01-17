@@ -40,7 +40,7 @@ static int remap(struct _cola *c, unsigned int lvlno)
 	size_t sz;
 	uint8_t *map;
 
-	printf("remap %u\n", lvlno);
+	dprintf(" - remap %u\n", lvlno);
 
 	sz = (1U << (lvlno + 1)) - 1;
 	sz *= sizeof(struct cola_elem);
@@ -62,8 +62,6 @@ static int map(struct _cola *c)
 {
 	size_t sz;
 	uint8_t *map;
-
-	printf("map %u\n", INITIAL_LEVELS);
 
 	sz = (1U << (INITIAL_LEVELS + 1)) - 1;
 	sz *= sizeof(struct cola_elem);
@@ -231,7 +229,7 @@ static int write_level(struct _cola *c, unsigned int lvlno,
 
 	if ( (1U << lvlno) > c->c_nelem ) {
 		if ( lvlno > c->c_maplvls ) {
-			printf("fallocate level %u\n", lvlno);
+			dprintf("fallocate level %u\n", lvlno);
 			if ( posix_fallocate(c->c_fd, ofs, ofs + sz) )
 				fprintf(stderr, "%s: fallocate: %s\n",
 					cmd, os_err());
@@ -247,7 +245,6 @@ static int write_level(struct _cola *c, unsigned int lvlno,
 		ret = 1;
 	}
 
-	/* TODO: remap then write async */
 	if ( lvlno > INITIAL_LEVELS &&
 			lvlno < MAP_LEVELS &&
 			(1U << lvlno) > c->c_nelem ) {
