@@ -76,6 +76,7 @@ static int remap(struct _cola *c, unsigned int lvlno)
 		return 0;
 	}
 
+	madvise(map, c->c_mapsz, MADV_RANDOM);
 	c->c_maplvls = lvlno;
 	c->c_mapsz = sz;
 	c->c_map = map;
@@ -98,6 +99,8 @@ static int map(struct _cola *c)
 		fprintf(stderr, "%s: mmap: %s\n", cmd, os_err());
 		return 0;
 	}
+
+	madvise(map, sz, MADV_RANDOM);
 
 	c->c_maplvls = INITIAL_LEVELS;
 	c->c_mapsz = sz;
