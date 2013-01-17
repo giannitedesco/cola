@@ -10,6 +10,7 @@
 #include <cola-format.h>
 #include <os.h>
 
+#define DEBUG 0
 #if DEBUG
 #define dprintf(x, ...)  printf("\033[35m" x "\033[0m", ##__VA_ARGS__)
 #else
@@ -96,15 +97,20 @@ cola_t cola_creat(const char *fn, int overwrite)
 	return do_open(fn, 1, 1, overwrite);
 }
 
-static struct cola_elem *read_level(struct _cola *c, unsigned int lvlno)
+static struct cola_elem *read_level_part(struct _cola *c, unsigned int lvlno,
+					cola_key_t from, cola_key_t to)
 {
 	struct cola_elem *level = NULL;
 	cola_key_t nr_ent, ofs;
 	size_t sz;
 	int eof;
 
-	nr_ent = (1 << lvlno);
-	ofs = nr_ent - 1;
+	assert(from <= to);
+	assert(to <= (1U << lvlno));
+
+	nr_ent = to - from;
+	ofs = (1U << lvlno) - 1;
+	ofs += from;
 
 	sz = nr_ent * sizeof(*level);
 	level = malloc(sz);
@@ -128,6 +134,11 @@ out_free:
 	level = NULL;
 out:
 	return level;
+}
+
+static struct cola_elem *read_level(struct _cola *c, unsigned int lvlno)
+{
+	return read_level_part(c, lvlno, 0, 1U << lvlno);
 }
 
 static int write_level(struct _cola *c, unsigned int lvlno,
@@ -281,20 +292,30 @@ int cola_insert(cola_t c, cola_key_t key)
 }
 
 static int query_level(struct _cola *c, cola_key_t key,
-			unsigned int lvlno, int *result)
+			unsigned int lvlno, int *result,
+			cola_key_t *lo, cola_key_t *hi)
 {
 	struct cola_elem *level, *p;
-	cola_key_t n;
+	cola_key_t n, l, h, sz;
 
-	level = read_level(c, lvlno);
+	dprintf("bsearch level %u (%"PRIu64":%"PRIu64")\n", lvlno, *lo, *hi);
+	level = read_level_part(c, lvlno, *lo, *hi);
 	if ( NULL == level )
 		return 0;
 
-	for(*result = 0, p = level, n = (1U << lvlno); n; ) {
+	sz = *hi - *lo;
+	l = 0;
+	h = (1U << (lvlno + 1));
+
+	for(*result = 0, p = level, n = sz; n; ) {
 		cola_key_t i = n / 2;
 		if ( key < p[i].key ) {
+			if ( p[i].fp < h )
+				h = p[i].fp;
 			n = i;
 		}else if ( key > p[i].key ) {
+			if ( p[i].fp > l )
+				l = p[i].fp;
 			p = p + (i + 1);
 			n = n - (i + 1);
 		}else{
@@ -303,19 +324,24 @@ static int query_level(struct _cola *c, cola_key_t key,
 		}
 	}
 
+	if ( *result == 0 ) {
+		dprintf(" - nope %"PRIu64" @ %"PRIu64"\n", n, p - level);
+		dprintf(" - lo=%"PRIu64" hi=%"PRIu64"\n", l, h);
+	}
+
+	*lo = l;
+	*hi = h;
 	free(level);
 	return 1;
 }
 
 int cola_query(cola_t c, cola_key_t key, int *result)
 {
+	cola_key_t lo = 0, hi = 1;
 	unsigned int i;
 
 	for(i = 0; c->c_nelem >= (1U << i); i++) {
-		if ( !(c->c_nelem & (1 << i)) )
-			continue;
-		dprintf("bsearch level %u\n", i);
-		if ( !query_level(c, key, i, result) )
+		if ( !query_level(c, key, i, result, &lo, &hi) )
 			return 0;
 		if ( *result )
 			return 1;
