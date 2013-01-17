@@ -28,11 +28,12 @@
 #endif
 
 struct _cola {
-	int c_fd;
 	cola_key_t c_nelem;
 	uint8_t *c_map;
 	size_t c_mapsz;
 	unsigned int c_maplvls;
+	unsigned int c_nxtlvl;
+	int c_fd;
 };
 
 struct buf {
@@ -40,6 +41,22 @@ struct buf {
 	cola_key_t nelem;
 	int heap;
 };
+
+static unsigned int cfls(cola_key_t k)
+{
+	unsigned int i, ret;
+	for(i = ret = 0; i < sizeof(k)/8; i++) {
+		cola_key_t tmp;
+
+		tmp = 1U << i;
+		if ( tmp > k )
+			break;
+
+		if ( k & tmp )
+			ret = i;
+	}
+	return ret;
+}
 
 static int remap(struct _cola *c, unsigned int lvlno)
 {
@@ -151,6 +168,11 @@ static struct _cola *do_open(const char *fn, int rw, int create, int overwrite)
 	if ( !map(c) )
 		goto out_close;
 
+	c->c_nxtlvl = cfls(c->c_nelem);
+	if ( c->c_nxtlvl < INITIAL_LEVELS )
+		c->c_nxtlvl = INITIAL_LEVELS + 1;
+	dprintf("next level init to %u\n", c->c_nxtlvl);
+
 	/* success */
 	goto out;
 
@@ -187,6 +209,7 @@ static int buf_alloc(struct _cola *c, unsigned int nelem, struct buf *buf)
 	if ( NULL == buf->ptr )
 		return 0;
 	buf->nelem = nelem;
+	buf->heap = 1;
 	return 1;
 }
 
@@ -250,23 +273,6 @@ static int write_prep(struct _cola *c, unsigned int lvlno, struct buf *buf)
 	ofs += sizeof(struct cola_hdr);
 	sz = nr_ent * sizeof(*buf->ptr);
 
-	/* make sure the level we're about to write to is allocated and,
-	 * if required, mapped
-	*/
-	if ( (1U << lvlno) > c->c_nelem ) {
-		if ( lvlno > c->c_maplvls ) {
-			dprintf("fallocate level %u\n", lvlno);
-			if ( posix_fallocate(c->c_fd, ofs, ofs + sz) )
-				fprintf(stderr, "%s: fallocate: %s\n",
-					cmd, os_err());
-			if ( lvlno <= MAP_LEVELS &&
-					(1U << lvlno) > c->c_nelem ) {
-				if ( !remap(c, lvlno) )
-					return 0;
-			}
-		}
-	}
-
 	if ( lvlno > c->c_maplvls ) {
 		buf->ptr = malloc(nr_ent);
 		if ( NULL == buf->ptr ) {
@@ -307,39 +313,32 @@ static int write_level(struct _cola *c, unsigned int lvlno,
 }
 
 /* a is always what was in the k-1'th array */
-static struct cola_elem *level_merge(struct cola_elem *a,
-					struct cola_elem *b,
-					unsigned int lvlno)
+static void level_merge(struct buf *a, struct buf *b, struct buf *m)
 {
-	cola_key_t mcnt = (1 << (lvlno + 1));
-	cola_key_t max = (1 << lvlno);
-	struct cola_elem *m;
 	cola_key_t i, aa, bb;
 
-	m = malloc(sizeof(*m) * mcnt);
-	if ( NULL == m )
-		return NULL;
-
-	for(i = aa = bb = 0; i < mcnt; i++) {
-		if ( aa < max && a[aa].key < b[bb].key ) {
-			m[i] = a[aa];
+	for(i = aa = bb = 0; i < m->nelem; i++) {
+		if ( aa < a->nelem && a->ptr[aa].key < b->ptr[bb].key ) {
+			m->ptr[i] = a->ptr[aa];
 			aa++;
-		}else if ( bb < max && a[aa].key > b[bb].key ) {
-			m[i] = b[bb];
+		}else if ( bb < a->nelem && a->ptr[aa].key > b->ptr[bb].key ) {
+			m->ptr[i] = b->ptr[bb];
 			bb++;
 		}else{
 			if ( aa < bb ) {
-				m[i] = a[aa];
+				assert(aa < a->nelem);
+				m->ptr[i] = a->ptr[aa];
 				aa++;
 			}else{
-				m[i] = b[bb];
+				assert(bb < b->nelem);
+				m->ptr[i] = b->ptr[bb];
 				bb++;
 			}
 		}
 	}
 
-	assert(aa == (1U << lvlno));
-	assert(bb == (1U << lvlno));
+	assert(aa == a->nelem);
+	assert(bb == b->nelem);
 
 #if 0
 	/* modify a with ideal keys and pointers, a will
@@ -347,19 +346,18 @@ static struct cola_elem *level_merge(struct cola_elem *a,
 	 *
 	 * FIXME: changing keys ruins prior level pointers
 	*/
-	for(i = 0; i < max; i++) {
-		a[i].key = m[i << 1U].key;
+	for(i = 0; i < a->nelem; i++) {
+		a[i].key = m->ptr[i << 1U].key;
 		a[i].fp = i << 1U;
 	}
 #else
-	for(i = bb = 0; i < max; i++) {
-		while(bb < mcnt && m[bb].key < a[i].key) {
+	for(i = bb = 0; i < a->nelem; i++) {
+		while(bb < m->nelem && m->ptr[bb].key < a->ptr[i].key) {
 			bb++;
 		}
-		a[i].fp = bb;
+		a->ptr[i].fp = bb;
 	}
 #endif
-	return m;
 }
 
 static int fractional_cascade(struct _cola *c, unsigned int lvlno,
@@ -397,37 +395,72 @@ int cola_insert(cola_t c, cola_key_t key)
 	struct buf level;
 	unsigned int i;
 
+	dprintf("Insert key %"PRIu64"\n", key);
+
 	if ( !buf_alloc(c, 1, &level) )
 		return 0;
-
-	dprintf("Insert key %"PRIu64"\n", key);
 	level.ptr[0].key = key;
+
+	/* make sure the level we're about to write to is allocated and,
+	 * if required, mapped
+	*/
+	if ( newcnt == (1ULL << c->c_nxtlvl) ) {
+		cola_key_t nr_ent, ofs;
+		size_t sz;
+
+		nr_ent = (1ULL << c->c_nxtlvl);
+		ofs = nr_ent - 1;
+		ofs *= sizeof(struct cola_elem);
+		ofs += sizeof(struct cola_hdr);
+
+		sz = nr_ent * sizeof(struct cola_elem);
+		dprintf("fallocate level %u\n", c->c_nxtlvl);
+		if ( posix_fallocate(c->c_fd, ofs, ofs + sz) )
+			fprintf(stderr, "%s: fallocate: %s\n",
+				cmd, os_err());
+		if ( c->c_nxtlvl <= MAP_LEVELS &&
+				(1U << c->c_nxtlvl) > c->c_nelem ) {
+			if ( !remap(c, c->c_nxtlvl) )
+				return 0;
+		}
+		c->c_nxtlvl++;
+	}
 
 	for(i = 0; newcnt >= (1U << i); i++) {
 		if ( c->c_nelem & (1U << i) ) {
-			struct cola_elem *merged;
-			struct buf level2;
+			struct buf level2, merged;
+			int ret;
 
 			dprintf(" - level %u full\n", i);
 			if ( !read_level(c, i, &level2) ) {
 				buf_finish(&level);
 				return 0;
 			}
-			merged = level_merge(level2.ptr, level.ptr, i);
-			if ( !write_level(c, i, &level2) ) {
+
+			if ( c->c_nelem & (1U << (i + 1)) ) {
+				ret = buf_alloc(c, (1U << (i + 1)), &merged);
+			}else{
+				/* landing in next level so write to map */
+				ret = write_prep(c, i + 1, &merged);
+			}
+			if ( !ret ) {
 				buf_finish(&level2);
 				buf_finish(&level);
 				return 0;
 			}
+
+			level_merge(&level2, &level, &merged);
+			if ( !write_level(c, i, &level2) ) {
+				buf_finish(&level2);
+				buf_finish(&level);
+				buf_finish(&merged);
+				return 0;
+			}
+
 			buf_finish(&level2);
 			buf_finish(&level);
 
-			/* TODO: write prep this shit */
-			level.ptr = merged;
-			level.nelem = (1U << (i + 1));
-			level.heap = 1;
-			if ( NULL == merged )
-				return 0;
+			memcpy(&level, &merged, sizeof(level));
 		}else{
 			dprintf(" - level %u empty\n", i);
 			if ( !fractional_cascade(c, i, level.ptr) ||
