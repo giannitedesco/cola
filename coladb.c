@@ -244,6 +244,7 @@ static int fractional_cascade(struct _cola *c, unsigned int lvlno,
 		}
 		cur[i].fp = j;
 	}
+	free(next);
 
 	return 1;
 }
@@ -286,6 +287,7 @@ int cola_insert(cola_t c, cola_key_t key)
 				free(level);
 				return 0;
 			}
+			free(level);
 			break;
 		}
 	}
