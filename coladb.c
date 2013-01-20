@@ -302,6 +302,7 @@ static int write_level(struct _cola *c, unsigned int lvlno,
 	cola_key_t ofs, nr_ent;
 	int ret;
 
+	assert((1U << lvlno) <= buf->nelem);
 	nr_ent = (1 << lvlno);
 	ofs = nr_ent - 1;
 	ofs *= sizeof(*buf->ptr);
@@ -313,6 +314,13 @@ static int write_level(struct _cola *c, unsigned int lvlno,
 		ret = fd_pwrite(c->c_fd, ofs, buf->ptr,
 				buf->nelem * sizeof(*buf->ptr));
 	}else{
+		uint8_t *ptr = (c->c_map + ofs);
+
+		if ( ptr != buf->ptr ) {
+			size_t sz;
+			sz = nr_ent * sizeof(*buf->ptr);
+			memcpy(ptr, buf->ptr, sz);
+		}
 		ret = 1;
 	}
 
