@@ -314,7 +314,7 @@ static int write_level(struct _cola *c, unsigned int lvlno,
 		ret = fd_pwrite(c->c_fd, ofs, buf->ptr,
 				buf->nelem * sizeof(*buf->ptr));
 	}else{
-		uint8_t *ptr = (c->c_map + ofs);
+		struct cola_elem *ptr = (struct cola_elem *)(c->c_map + ofs);
 
 		if ( ptr != buf->ptr ) {
 			size_t sz;
