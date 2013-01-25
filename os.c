@@ -181,6 +181,7 @@ int fd_read(int fd, void *buf, size_t *sz, int *eof)
 	size_t len = *sz;
 	ssize_t ret;
 
+	*eof = 0;
 	*sz = 0;
 
 again:
