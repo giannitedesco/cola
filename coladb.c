@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <assert.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 #include <cola.h>
 #include <cola-format.h>
@@ -184,7 +185,7 @@ static struct _cola *do_open(const char *fn, int rw, int create, int overwrite)
 	goto out;
 
 out_close:
-	fd_close(c->c_fd);
+	close(c->c_fd);
 out_free:
 	free(c);
 	c = NULL;
@@ -602,7 +603,7 @@ int cola_close(cola_t c)
 		if ( munmap(c->c_map, c->c_mapsz) ) {
 			ret = 0;
 		}
-		if ( !fd_close(c->c_fd) ) {
+		if ( !close(c->c_fd) ) {
 			ret = 0;
 		}
 		free(c);

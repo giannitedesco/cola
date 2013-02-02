@@ -16,7 +16,6 @@ int fd_read(int fd, void *buf, size_t *sz, int *eof) _check_result;
 int fd_pread(int fd, off_t off, void *buf, size_t *sz, int *eof) _check_result;
 int fd_write(int fd, const void *buf, size_t len) _check_result;
 int fd_pwrite(int fd, off_t off, const void *buf, size_t len) _check_result;
-int fd_close(int fd);
 
 int fd_block(int fd, int b);
 int fd_coe(int fd, int coe);
