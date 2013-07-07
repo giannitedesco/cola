@@ -226,7 +226,6 @@ static int read_level_part(struct _cola *c, unsigned int lvlno,
 					struct buf *buf)
 {
 	cola_key_t nr_ent, ofs;
-	size_t sz;
 	int eof;
 
 	assert(from <= to);
@@ -237,9 +236,10 @@ static int read_level_part(struct _cola *c, unsigned int lvlno,
 	ofs += from;
 	ofs *= sizeof(*buf->ptr);
 	ofs += sizeof(struct cola_hdr);
-	sz = nr_ent * sizeof(*buf->ptr);
 
 	if ( lvlno > c->c_maplvls ) {
+		size_t sz;
+
 		buf->ptr = malloc(nr_ent * sizeof(*buf->ptr));
 		if ( NULL == buf->ptr )
 			return 0;
@@ -247,6 +247,7 @@ static int read_level_part(struct _cola *c, unsigned int lvlno,
 		buf->nelem = nr_ent;
 		buf->heap = 1;
 
+		sz = nr_ent * sizeof(*buf->ptr);
 		if ( !fd_pread(c->c_fd, ofs, buf->ptr, &sz, &eof) ||
 				sz != (nr_ent * sizeof(*buf->ptr)) ) {
 			fprintf(stderr, "%s: read: %s\n",
@@ -272,14 +273,12 @@ static int read_level(struct _cola *c, unsigned int lvlno,
 static int write_prep(struct _cola *c, unsigned int lvlno, struct buf *buf)
 {
 	cola_key_t nr_ent, ofs;
-	size_t sz;
 
 	nr_ent = (1 << lvlno);
 
 	ofs = nr_ent - 1;
 	ofs *= sizeof(*buf->ptr);
 	ofs += sizeof(struct cola_hdr);
-	sz = nr_ent * sizeof(*buf->ptr);
 
 	if ( lvlno > c->c_maplvls ) {
 		buf->ptr = malloc(nr_ent);
@@ -444,7 +443,7 @@ int cola_insert(cola_t c, cola_key_t key)
 
 	for(i = 0; newcnt >= (1U << i); i++) {
 		if ( c->c_nelem & (1U << i) ) {
-			struct buf level2, merged;
+			struct buf level2, merged = {0,};
 			int ret;
 
 			dprintf(" - level %u full\n", i);
