@@ -354,54 +354,6 @@ static void level_merge(struct buf *a, struct buf *b, struct buf *m)
 
 	assert(aa == a->nelem);
 	assert(bb == b->nelem);
-
-#if 0
-	/* modify a with ideal keys and pointers, a will
-	 * always be 'empty' after this merge
-	 *
-	 * FIXME: changing keys ruins prior level pointers
-	*/
-	for(i = 0; i < a->nelem; i++) {
-		a[i].key = m->ptr[i << 1U].key;
-		a[i].fp = i << 1U;
-	}
-#else
-	for(i = bb = 0; i < a->nelem; i++) {
-		while(bb < m->nelem && m->ptr[bb].key < a->ptr[i].key) {
-			bb++;
-		}
-		a->ptr[i].fp = bb;
-	}
-#endif
-}
-
-static int fractional_cascade(struct _cola *c, unsigned int lvlno,
-				struct cola_elem *cur)
-{
-	unsigned int nl = lvlno + 1;
-	struct buf next;
-	cola_key_t i, j;
-
-	if ( (c->c_nelem < (1U << nl)) )
-		return 1;
-
-	/* TODO: investigate relying on prior level pointers
-	 * if that level went from 1 to 0.
-	*/
-	dprintf(" - fractional cascade %u -> %u\n", lvlno, nl);
-	if ( !read_level(c, nl, &next) )
-		return 0;
-
-	for(i = j = 0; i < (1U << lvlno); i++) {
-		while(j < (1U << nl) && next.ptr[j].key < cur[i].key) {
-			j++;
-		}
-		cur[i].fp = j;
-	}
-
-	buf_finish(&next);
-
-	return 1;
 }
 
 int cola_insert(cola_t c, cola_key_t key)
@@ -478,13 +430,10 @@ int cola_insert(cola_t c, cola_key_t key)
 
 			memcpy(&level, &merged, sizeof(level));
 		}else{
-			dprintf(" - level %u empty\n", i);
-			if ( !fractional_cascade(c, i, level.ptr) ||
-					!write_level(c, i, &level) ) {
+			if ( !write_level(c, i, &level) ) {
 				buf_finish(&level);
 				return 0;
 			}
-			buf_finish(&level);
 			break;
 		}
 	}
@@ -517,12 +466,8 @@ static int query_level(struct _cola *c, cola_key_t key,
 	for(*result = 0, p = level.ptr, n = sz; n; ) {
 		cola_key_t i = n / 2;
 		if ( key < p[i].key ) {
-			if ( p[i].fp < h )
-				h = p[i].fp;
 			n = i;
 		}else if ( key > p[i].key ) {
-			if ( p[i].fp > l )
-				l = p[i].fp;
 			p = p + (i + 1);
 			n = n - (i + 1);
 		}else{
@@ -574,7 +519,6 @@ int cola_dump(cola_t c)
 		printf("level %u:", i);
 		for(j = 0; j < (1U << i); j++) {
 			printf(" %"PRIu64, level.ptr[j].key);
-			printf("[%"PRIu64"]", level.ptr[j].fp);
 		}
 		if ( !(c->c_nelem & (1U << i)) )
 			printf("\033[0m");
