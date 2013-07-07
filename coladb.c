@@ -507,6 +507,7 @@ int cola_dump(cola_t c)
 {
 	unsigned int i;
 
+	printf("%"PRId64" items\n", c->c_nelem);
 	for(i = 0; c->c_nelem >= (1U << i); i++) {
 		struct buf level;
 		unsigned int j;
