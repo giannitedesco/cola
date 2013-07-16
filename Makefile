@@ -22,6 +22,7 @@ CFLAGS := -g -pipe -O2 -Wall \
 MKNFA_BIN := cola
 MKNFA_LIBS := 
 MKNFA_OBJ = cola.o \
+	    	minheap.o \
 		os.o \
 		coladb.o
 

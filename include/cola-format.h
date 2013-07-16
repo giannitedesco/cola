@@ -10,9 +10,10 @@
 
 #define COLA_MAGIC (0xc0U | (0x00U << 8) | ('L' << 16) | (('A') << 24))
 
-#define COLA_CURRENT_VER 1
+#define COLA_CURRENT_VER 2
 /* version 0: basic COLA
  * version 1: fractional cascading
+ * version 2: page aligned basic cola
 */
 struct cola_hdr {
 	cola_key_t h_nelem; /* number of keys */

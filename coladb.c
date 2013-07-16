@@ -16,12 +16,13 @@
 
 #include <cola.h>
 #include <cola-format.h>
+#include <minheap.h>
 #include <os.h>
 
 #define INITIAL_LEVELS		17 /* 128K */
 #define MAP_LEVELS		23 /* 8M */
 
-#define DEBUG 0
+//#define DEBUG 1
 #if DEBUG
 #define dprintf(x, ...)  printf("\033[35m" x "\033[0m", ##__VA_ARGS__)
 #else
@@ -43,6 +44,106 @@ struct buf {
 	cola_key_t nelem;
 	int heap;
 };
+
+struct inbuf {
+	int mapped;
+	union {
+		struct {
+			struct cola_elem *buf;
+			struct cola_elem *end;
+		}mapped;
+		struct {
+			struct cola_elem *buf;
+			struct cola_elem *cur;
+			struct cola_elem *end;
+			cola_key_t off;
+		}buffered;
+	}u;
+};
+
+struct outbuf {
+	union {
+		struct {
+			struct cola_elem *ptr;
+			struct cola_elem *end;
+		}mapped;
+		struct {
+			struct cola_elem *cur;
+			struct cola_elem *end;
+			unsigned int lvlno;
+		}buffered;
+	}u;
+	int mapped;
+};
+
+static cola_key_t level_ofs(unsigned int lvlno)
+{
+	cola_key_t ofs;
+
+	ofs = (1U << lvlno) - 1;
+	ofs *= sizeof(struct cola_elem);
+	ofs += sizeof(struct cola_hdr);
+
+	return ofs;
+}
+
+static void outbuf_init(struct outbuf *out, struct _cola *c, unsigned int lvlno)
+{
+	if ( lvlno <= c->c_maplvls ) {
+		out->u.mapped.ptr = (struct cola_elem *)(c->c_map +
+							level_ofs(lvlno));
+		out->u.mapped.end = out->u.mapped.ptr + (1U << lvlno);
+		out->mapped = 1;
+	}else{
+		assert(lvlno < c->c_maplvls);
+		out->mapped = 0;
+	}
+}
+
+static void outbuf_push(struct outbuf *out, struct cola_elem *e)
+{
+	if ( out->mapped ) {
+		assert(out->u.mapped.ptr < out->u.mapped.end);
+		out->u.mapped.ptr[0] = *e;
+		out->u.mapped.ptr++;
+	}else{
+		assert(out->mapped);
+	}
+}
+
+static void inbuf_one_item(struct inbuf *in, struct cola_elem *one)
+{
+	in->mapped = 1;
+	in->u.mapped.buf = one;
+	in->u.mapped.end = one + 1;
+}
+
+static void inbuf_init(struct inbuf *in, struct _cola *c, unsigned int lvlno)
+{
+	if ( lvlno <= c->c_maplvls ) {
+		in->mapped = 1;
+		in->u.mapped.buf = (struct cola_elem *)(c->c_map +
+							level_ofs(lvlno));
+		in->u.mapped.end = in->u.mapped.buf + (1U << lvlno);
+	}else{
+		assert(lvlno < c->c_maplvls);
+		in->mapped = 0;
+	}
+}
+
+static int inbuf_pop(struct inbuf *in, cola_key_t *ret)
+{
+	if ( in->mapped ) {
+		if ( in->u.mapped.buf >= in->u.mapped.end )
+			return 0;
+		*ret = in->u.mapped.buf[0].key;
+		in->u.mapped.buf++;
+		return 1;
+	}else{
+		assert(in->mapped);
+	}
+	return 0;
+}
 
 static unsigned int cfls(cola_key_t k)
 {
@@ -211,16 +312,6 @@ static void buf_finish(struct buf *buf)
 	buf->nelem = 0;
 }
 
-static int buf_alloc(struct _cola *c, unsigned int nelem, struct buf *buf)
-{
-	buf->ptr = malloc(nelem * sizeof(*buf->ptr));
-	if ( NULL == buf->ptr )
-		return 0;
-	buf->nelem = nelem;
-	buf->heap = 1;
-	return 1;
-}
-
 static int read_level_part(struct _cola *c, unsigned int lvlno,
 					cola_key_t from, cola_key_t to,
 					struct buf *buf)
@@ -232,10 +323,8 @@ static int read_level_part(struct _cola *c, unsigned int lvlno,
 	assert(to <= (1U << lvlno));
 
 	nr_ent = to - from;
-	ofs = (1U << lvlno) - 1;
+	ofs = level_ofs(lvlno);
 	ofs += from;
-	ofs *= sizeof(*buf->ptr);
-	ofs += sizeof(struct cola_hdr);
 
 	if ( lvlno > c->c_maplvls ) {
 		size_t sz;
@@ -270,103 +359,18 @@ static int read_level(struct _cola *c, unsigned int lvlno,
 	return read_level_part(c, lvlno, 0, 1U << lvlno, buf);
 }
 
-static int write_prep(struct _cola *c, unsigned int lvlno, struct buf *buf)
-{
-	cola_key_t nr_ent, ofs;
-
-	nr_ent = (1 << lvlno);
-
-	ofs = nr_ent - 1;
-	ofs *= sizeof(*buf->ptr);
-	ofs += sizeof(struct cola_hdr);
-
-	if ( lvlno > c->c_maplvls ) {
-		buf->ptr = malloc(nr_ent);
-		if ( NULL == buf->ptr ) {
-			fprintf(stderr, "%s: malloc: %s\n", cmd, os_err());
-			return 0;
-		}
-		buf->heap = 1;
-	}else{
-		buf->ptr = (struct cola_elem *)(c->c_map + ofs);
-		buf->heap = 0;
-	}
-
-	buf->nelem = nr_ent;
-	return 1;
-}
-
-static int write_level(struct _cola *c, unsigned int lvlno,
-			struct buf *buf)
-{
-	cola_key_t ofs, nr_ent;
-	int ret;
-
-	assert((1U << lvlno) <= buf->nelem);
-	nr_ent = (1 << lvlno);
-	ofs = nr_ent - 1;
-	ofs *= sizeof(*buf->ptr);
-	ofs += sizeof(struct cola_hdr);
-
-	assert(nr_ent <= buf->nelem);
-
-	if ( lvlno > c->c_maplvls ) {
-		ret = fd_pwrite(c->c_fd, ofs, buf->ptr,
-				buf->nelem * sizeof(*buf->ptr));
-	}else{
-		struct cola_elem *ptr = (struct cola_elem *)(c->c_map + ofs);
-
-		if ( ptr != buf->ptr ) {
-			size_t sz;
-			sz = nr_ent * sizeof(*buf->ptr);
-			memcpy(ptr, buf->ptr, sz);
-		}
-		ret = 1;
-	}
-
-	return ret;
-}
-
-/* a is always what was in the k-1'th array */
-static void level_merge(struct buf *a, struct buf *b, struct buf *m)
-{
-	cola_key_t i, aa, bb;
-
-	for(i = aa = bb = 0; i < m->nelem; i++) {
-		if ( aa < a->nelem && a->ptr[aa].key < b->ptr[bb].key ) {
-			m->ptr[i] = a->ptr[aa];
-			aa++;
-		}else if ( bb < a->nelem && a->ptr[aa].key > b->ptr[bb].key ) {
-			m->ptr[i] = b->ptr[bb];
-			bb++;
-		}else{
-			if ( aa < bb ) {
-				assert(aa < a->nelem);
-				m->ptr[i] = a->ptr[aa];
-				aa++;
-			}else{
-				assert(bb < b->nelem);
-				m->ptr[i] = b->ptr[bb];
-				bb++;
-			}
-		}
-	}
-
-	assert(aa == a->nelem);
-	assert(bb == b->nelem);
-}
-
 int cola_insert(cola_t c, cola_key_t key)
 {
 	cola_key_t newcnt = c->c_nelem + 1;
-	struct buf level;
-	unsigned int i;
+	struct inbuf *in;
+	struct outbuf out;
+	struct heap_item *h;
+	unsigned int k, i, outlvl;
+	struct cola_elem elem;
+
+	elem.key = key;
 
 	dprintf("Insert key %"PRIu64"\n", key);
-
-	if ( !buf_alloc(c, 1, &level) )
-		return 0;
-	level.ptr[0].key = key;
 
 	/* make sure the level we're about to write to is allocated and,
 	 * if required, mapped
@@ -393,49 +397,58 @@ int cola_insert(cola_t c, cola_key_t key)
 		c->c_nxtlvl++;
 	}
 
-	for(i = 0; newcnt >= (1U << i); i++) {
-		if ( c->c_nelem & (1U << i) ) {
-			struct buf level2, merged = {0,};
-			int ret;
+	outlvl = __builtin_ctzl(~c->c_nelem & newcnt);
+	k = outlvl + 1;
+	dprintf(" - will write to level %u (%u-way merge)\n",
+			outlvl, k);
+	h = alloca(sizeof(*h) * k);
+	if ( NULL == h )
+		return 0;
 
-			dprintf(" - level %u full\n", i);
-			if ( !read_level(c, i, &level2) ) {
-				buf_finish(&level);
-				return 0;
-			}
+	in = alloca(sizeof(*in) * k);
+	if ( NULL == in )
+		return 0;
 
-			if ( (c->c_nelem & (1U << (i + 1))) ||
-					i + 1 >= c->c_maplvls ) {
-				ret = buf_alloc(c, (1U << (i + 1)), &merged);
-			}else{
-				/* landing in next level so write to map */
-				ret = write_prep(c, i + 1, &merged);
-			}
-			if ( !ret ) {
-				buf_finish(&level2);
-				buf_finish(&level);
-				return 0;
-			}
-
-			level_merge(&level2, &level, &merged);
-			if ( !write_level(c, i, &level2) ) {
-				buf_finish(&level2);
-				buf_finish(&level);
-				buf_finish(&merged);
-				return 0;
-			}
-
-			buf_finish(&level2);
-			buf_finish(&level);
-
-			memcpy(&level, &merged, sizeof(level));
+	for(i = 0; i < k; i++) {
+		if ( i == 0 ) {
+			inbuf_one_item(in + i, &elem);
 		}else{
-			if ( !write_level(c, i, &level) ) {
-				buf_finish(&level);
-				return 0;
-			}
-			break;
+			inbuf_init(in + i, c, i - 1);
 		}
+	}
+
+	/* initialize the heap */
+	h = h - 1;
+	for(i = 1; i <= k; i++) {
+		h[i].val = i - 1;
+		inbuf_pop(in + h[i].val, &h[i].key);
+	}
+	minheap_init(k, h);
+
+	/* k-way merge in to output buffer */
+	outbuf_init(&out, c, outlvl);
+	//for(i = 0; i < (1U << outlvl); i++) {
+	while(k) {
+		struct cola_elem oelem;
+		cola_key_t next;
+		unsigned long next_in;
+
+		next_in = h[1].val;
+		oelem.key = h[1].key;
+
+		outbuf_push(&out, &oelem);
+
+		/* delete item from heap */
+		h[1] = h[k];
+		minheap_sift_down(k - 1, h);
+
+		if ( inbuf_pop(&in[next_in], &next) ) {
+			/* re-add to heap */
+			h[k].key = next;
+			h[k].val = next_in;
+			minheap_sift_up(k, h);
+		}else
+			k--;
 	}
 
 	c->c_nelem++;

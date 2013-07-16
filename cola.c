@@ -47,7 +47,7 @@ static int do_insertrandom(int argc, char **argv)
 
 	srand(seed);
 	for(i = 0; i < count; i++) {
-#if 1
+#if 0
 		if ( !cola_insert(c, rand() ) ) {
 #else
 		if ( !cola_insert(c, i) ) {
