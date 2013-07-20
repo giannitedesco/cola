@@ -12,7 +12,7 @@
 #include "compiler.h"
 
 typedef uint64_t cola_key_t;
-//typedef uint64_t cola_val_t;
+typedef uint64_t cola_val_t;
 
 static inline int cola_parse_key(const char *str, cola_key_t *val)
 {

@@ -23,6 +23,7 @@ struct cola_hdr {
 
 struct cola_elem {
 	cola_key_t key;
+	cola_val_t val;
 } _packed;
 
 #endif /* _COLA_FORMAT_H */
